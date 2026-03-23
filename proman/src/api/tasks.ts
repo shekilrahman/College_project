@@ -55,3 +55,24 @@ export const completeTask = async (id: string): Promise<Task> => {
     const response = await api.post<Task>(`${ENDPOINT}/${id}/complete`);
     return response.data;
 };
+
+export interface SimulationConditions {
+    memberLeaves?: Array<{
+        userId: string;
+        startDate: string;
+        endDate: string;
+    }>;
+    globalHolidays?: Array<{
+        startDate: string;
+        endDate: string;
+    }>;
+    taskDelays?: Array<{
+        taskId: string;
+        additionalDays: number;
+    }>;
+}
+
+export const simulateTasks = async (projectId: string, conditions: SimulationConditions): Promise<Task[]> => {
+    const response = await api.post<Task[]>(`${ENDPOINT}/simulate/${projectId}`, { conditions });
+    return response.data;
+};

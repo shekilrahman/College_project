@@ -51,6 +51,9 @@ export interface Task {
     progressHistory: TaskProgressHistory[];
     createdAt: string;
     updatedAt: string;
+    // Backend-calculated prediction fields
+    predictedStartDate?: string | null;
+    predictedEndDate?: string | null;
 }
 
 // Auth DTOs

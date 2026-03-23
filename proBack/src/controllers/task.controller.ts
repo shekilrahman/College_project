@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import Task from '../models/task.model';
 import Project from '../models/project.model';
+import { getProjectPredictions } from '../utils/predictiveEngine';
 
 interface AuthRequest extends Request {
     user?: any;
@@ -163,15 +164,75 @@ const getTasks = async (req: AuthRequest, res: Response) => {
         }
 
         const tasks = await Task.find(query)
-            .populate('assignedTo', 'name email')
+            .populate('assignedTo', 'name email type')
             .populate('createdBy', 'name email')
             .populate('parentTask', 'title')
             .populate('project', 'title')
-            .populate('dependencies', 'title status');
+            .populate('dependencies', 'title status dates progress assignedTo');
 
-        res.json(tasks);
+        // Run prediction engine on ALL tasks in the project (for cross-task dependency chains)
+        // Fetch full project task set for accurate dependency traversal
+        const projectId = req.query.project as string;
+        let allProjectTasks = tasks as any[];
+        if (projectId) {
+            // Fetch ALL tasks for the project with progressHistory for velocity calculation
+            const fullSet = await Task.find({ project: projectId })
+                .populate('assignedTo', 'name email type')
+                .populate('dependencies', 'title status dates progress assignedTo progressHistory')
+                .select('+progressHistory'); // Ensure progressHistory is in the payload
+            allProjectTasks = fullSet as any[];
+        }
+
+        const predictions = getProjectPredictions(allProjectTasks);
+
+        // Merge predictions into the response objects
+        const tasksWithPredictions = tasks.map((task: any) => {
+            const pred = predictions.get(task._id.toString());
+            const plain = task.toObject();
+            return {
+                ...plain,
+                predictedStartDate: pred?.predictedStartDate ?? null,
+                predictedEndDate: pred?.predictedEndDate ?? null,
+            };
+        });
+
+        res.json(tasksWithPredictions);
     } catch (error) {
         console.error('Error fetching tasks:', error);
+        res.status(500).json({ message: 'Server Error', error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+};
+
+// @desc    Simulate tasks with conditions
+// @route   POST /api/tasks/simulate/:projectId
+// @access  Private
+const simulateProjectTasks = async (req: AuthRequest, res: Response) => {
+    try {
+        const projectId = req.params.projectId;
+        const conditions = req.body.conditions;
+
+        // Fetch ALL tasks for the project with progressHistory for velocity calculation
+        const allProjectTasks = await Task.find({ project: projectId as any })
+            .populate('assignedTo', 'name email type')
+            .populate('dependencies', 'title status dates progress assignedTo progressHistory')
+            .select('+progressHistory'); // Ensure progressHistory is in the payload
+
+        const predictions = getProjectPredictions(allProjectTasks, conditions);
+
+        // Merge predictions into the response objects
+        const tasksWithPredictions = allProjectTasks.map((task: any) => {
+            const pred = predictions.get(task._id.toString());
+            const plain = task.toObject();
+            return {
+                ...plain,
+                predictedStartDate: pred?.predictedStartDate ?? null,
+                predictedEndDate: pred?.predictedEndDate ?? null,
+            };
+        });
+
+        res.json(tasksWithPredictions);
+    } catch (error) {
+        console.error('Error simulating tasks:', error);
         res.status(500).json({ message: 'Server Error', error: error instanceof Error ? error.message : 'Unknown error' });
     }
 };
@@ -273,7 +334,10 @@ const startTask = async (req: AuthRequest, res: Response): Promise<void> => {
         // Validate dependencies
         if (task.dependencies && task.dependencies.length > 0) {
             const dependencies = await Task.find({ _id: { $in: task.dependencies } });
-            const incompleteDependencies = dependencies.filter(dep => dep.status !== 'Completed');
+            const incompleteDependencies = dependencies.filter(dep => {
+                const status = (dep.status || '').toLowerCase();
+                return status !== 'completed' && status !== 'done';
+            });
 
             if (incompleteDependencies.length > 0) {
                 const depTitles = incompleteDependencies.map(dep => dep.title).join(', ');
@@ -290,6 +354,11 @@ const startTask = async (req: AuthRequest, res: Response): Promise<void> => {
         };
         task.status = 'In Progress';
         await task.save();
+
+        // Update parent status/propagation
+        if (task.parentTask) {
+            await updateParentProgress(task.parentTask.toString());
+        }
 
         res.json(task);
     } catch (error) {
@@ -320,7 +389,10 @@ const updateProgress = async (req: AuthRequest, res: Response): Promise<void> =>
         // Validate dependencies
         if (task.dependencies && task.dependencies.length > 0) {
             const dependencies = await Task.find({ _id: { $in: task.dependencies } });
-            const incompleteDependencies = dependencies.filter(dep => dep.status !== 'Completed');
+            const incompleteDependencies = dependencies.filter(dep => {
+                const status = (dep.status || '').toLowerCase();
+                return status !== 'completed' && status !== 'done';
+            });
 
             if (incompleteDependencies.length > 0) {
                 const depTitles = incompleteDependencies.map(dep => dep.title).join(', ');
@@ -343,6 +415,20 @@ const updateProgress = async (req: AuthRequest, res: Response): Promise<void> =>
         newProgress = Math.max(0, Math.min(100, newProgress)); // Clamp between 0-100
 
         task.progress = newProgress;
+
+        if (newProgress === 100) {
+            task.status = 'Completed';
+            task.dates = {
+                ...task.dates,
+                completedDate: new Date()
+            };
+        } else if (newProgress > 0 && task.status === 'Pending') {
+            task.status = 'In Progress';
+            if (!task.dates.startedDate) {
+                task.dates.startedDate = new Date();
+            }
+        }
+
         task.progressHistory.push({
             progress: newProgress,
             timestamp: new Date(),
@@ -378,7 +464,10 @@ const completeTask = async (req: AuthRequest, res: Response): Promise<void> => {
         // Validate dependencies
         if (task.dependencies && task.dependencies.length > 0) {
             const dependencies = await Task.find({ _id: { $in: task.dependencies } });
-            const incompleteDependencies = dependencies.filter(dep => dep.status !== 'Completed');
+            const incompleteDependencies = dependencies.filter(dep => {
+                const status = (dep.status || '').toLowerCase();
+                return status !== 'completed' && status !== 'done';
+            });
 
             if (incompleteDependencies.length > 0) {
                 const depTitles = incompleteDependencies.map(dep => dep.title).join(', ');
@@ -418,30 +507,71 @@ const completeTask = async (req: AuthRequest, res: Response): Promise<void> => {
 // Helper function to calculate and update parent task progress
 async function updateParentProgress(parentId: string) {
     try {
-        const children = await Task.find({ parentTask: parentId });
+        const parent = await Task.findById(parentId);
+        if (!parent) return;
 
+        const children = await Task.find({ parentTask: parentId });
         if (children.length === 0) return;
 
-        // Calculate weighted average
+        // 1. Calculate weighted/simple average progress
         let totalProgress = 0;
         let totalWeight = 0;
-
         children.forEach(child => {
             totalProgress += (child.progress * child.weight);
             totalWeight += child.weight;
         });
 
-        // Calculate final progress (handle division by zero)
-        const calculatedProgress = totalWeight > 0 ? totalProgress / totalWeight : 0;
+        let calculatedProgress = 0;
+        if (totalWeight > 0) {
+            calculatedProgress = totalProgress / totalWeight;
+        } else {
+            const sum = children.reduce((acc, child) => acc + child.progress, 0);
+            calculatedProgress = sum / children.length;
+        }
 
-        // Update parent
-        await Task.findByIdAndUpdate(parentId, {
-            progress: Math.round(calculatedProgress)
-        });
+        const roundedProgress = Math.round(calculatedProgress);
+        const oldProgress = parent.progress;
+        const oldStatus = parent.status;
 
-        // Recursively update grandparent if exists
-        const parent = await Task.findById(parentId);
-        if (parent?.parentTask) {
+        parent.progress = roundedProgress;
+
+        // 2. Determine Status and Dates
+        if (roundedProgress === 100) {
+            parent.status = 'Completed';
+            
+            // Derive completion date from the LATEST child activity
+            const latestChildDate = children.reduce((latest, child) => {
+                const childDate = child.dates?.completedDate || child.updatedAt || child.createdAt;
+                if (!childDate) return latest;
+                const d = new Date(childDate);
+                return d > latest ? d : latest;
+            }, new Date(0));
+
+            if (!parent.dates.completedDate) {
+                parent.dates.completedDate = latestChildDate.getTime() > 0 ? latestChildDate : new Date();
+            }
+        } else if (roundedProgress > 0) {
+            parent.status = 'In Progress';
+            if (!parent.dates.startedDate) {
+                parent.dates.startedDate = new Date();
+            }
+        } else {
+            parent.status = 'Pending';
+        }
+
+        // 3. Record history if something changed
+        if (oldProgress !== roundedProgress || oldStatus !== parent.status) {
+            parent.progressHistory.push({
+                progress: roundedProgress,
+                timestamp: new Date(),
+                note: `Auto-updated from subtasks: ${parent.status} (${roundedProgress}%)`
+            });
+        }
+
+        await parent.save();
+
+        // 4. Recurse
+        if (parent.parentTask) {
             await updateParentProgress(parent.parentTask.toString());
         }
     } catch (error) {
@@ -537,5 +667,5 @@ const createBulkTasks = async (req: AuthRequest, res: Response): Promise<void> =
     }
 };
 
-export { createTask, createBulkTasks, getTasks, getTaskById, updateTask, deleteTask, startTask, updateProgress, completeTask };
+export { createTask, createBulkTasks, getTasks, getTaskById, updateTask, deleteTask, startTask, updateProgress, completeTask, simulateProjectTasks };
 

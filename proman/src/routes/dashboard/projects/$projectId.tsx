@@ -1,15 +1,16 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
-import { Plus } from 'lucide-react'
+import { Plus, CalendarDays } from 'lucide-react'
 import { getProjectById } from '@/api/projects'
 import { getTasks } from '@/api/tasks'
 import { Project, Task } from '@/api/types'
 import { CreateTaskDialog } from '@/components/CreateTaskDialog'
 import { useAuth } from '@/context/AuthContext'
 import { ProjectNetworkGraph } from '@/components/ProjectNetworkGraph'
-import { ProjectTimeline } from '@/components/ProjectTimeline'
-import { ViewModeNotch, ViewMode } from '@/components/ViewModeNotch'
+import { ViewModeNotch } from '@/components/ViewModeNotch'
+import { SimulationModal } from '@/components/SimulationModal'
+import { simulateTasks, SimulationConditions } from '@/api/tasks'
 
 export const Route = createFileRoute('/dashboard/projects/$projectId')({
   component: ProjectDetailComponent,
@@ -25,12 +26,24 @@ function ProjectDetailComponent() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // View Mode
-  const [viewMode, setViewMode] = useState<ViewMode>('graph');
-
   // Subtask Control
   const [createSubtaskOpen, setCreateSubtaskOpen] = useState(false);
   const [subtaskParentId, setSubtaskParentId] = useState<string | undefined>(undefined);
+
+  // Simulation Control
+  const [simulationOpen, setSimulationOpen] = useState(false);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [isSimulationActive, setIsSimulationActive] = useState(false);
+
+  const projectMembers = useMemo(() => {
+    const membersMap = new Map<string, any>();
+    tasks.forEach(task => {
+      if (task.assignedTo && typeof task.assignedTo !== 'string') {
+        membersMap.set(task.assignedTo._id, task.assignedTo);
+      }
+    });
+    return Array.from(membersMap.values());
+  }, [tasks]);
 
   useEffect(() => {
     fetchProjectData();
@@ -57,6 +70,7 @@ function ProjectDetailComponent() {
       ]);
       setProject(projData);
       setTasks(tasksData);
+      setIsSimulationActive(false);
     } catch (error) {
       console.error(error);
     } finally {
@@ -73,6 +87,23 @@ function ProjectDetailComponent() {
     setCreateSubtaskOpen(false);
     setSubtaskParentId(undefined);
     fetchProjectData();
+  };
+
+  const handleSimulate = async (conditions: SimulationConditions) => {
+    try {
+      setIsSimulating(true);
+      const simulatedTasks = await simulateTasks(projectId, conditions);
+      setTasks(simulatedTasks);
+      setIsSimulationActive(true);
+    } catch (error) {
+      console.error('Simulation failed:', error);
+    } finally {
+      setIsSimulating(false);
+    }
+  };
+
+  const handleResetSimulation = async () => {
+    await fetchProjectData();
   };
 
   if (loading) return (
@@ -97,14 +128,22 @@ function ProjectDetailComponent() {
       {/* Header Notch - Centered at Top */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3">
         <ViewModeNotch
-          value={viewMode}
-          onChange={setViewMode}
           projectTitle={project.title}
           projectStatus={project.status}
           creatorName={creatorName}
           creatorInitial={creatorName?.charAt(0)}
           onBack={() => navigate({ to: '/dashboard' })}
         />
+
+        {/* Simulate Button */}
+        <Button 
+          size="sm" 
+          variant={isSimulationActive ? 'default' : 'secondary'}
+          className={`shadow-lg rounded-full h-10 px-4 ${isSimulationActive ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`}
+          onClick={() => setSimulationOpen(true)}
+        >
+          <CalendarDays className="h-4 w-4 mr-1.5" /> {isSimulationActive ? 'Simulation Active' : 'Simulate'}
+        </Button>
 
         {/* New Task Button - Only for Creator */}
         {isProjectCreator && (
@@ -113,7 +152,7 @@ function ProjectDetailComponent() {
             projects={[project]}
             defaultProjectId={project._id}
             trigger={
-              <Button size="sm" className="shadow-lg rounded-full h-10 px-4 bg-slate-900 hover:bg-slate-800">
+              <Button size="sm" className="shadow-lg rounded-full h-10 px-4 bg-slate-900 hover:bg-slate-800 text-white">
                 <Plus className="h-4 w-4 mr-1.5" /> New Task
               </Button>
             }
@@ -123,25 +162,14 @@ function ProjectDetailComponent() {
 
       {/* Full Screen View Layer */}
       <div className="absolute inset-0 z-0">
-        {viewMode === 'graph' ? (
-          <ProjectNetworkGraph
-            tasks={tasks}
-            projectTitle={project.title}
-            onAddSubtask={handleCreateSubtask}
-            currentUserId={user?._id}
-            isProjectCreator={isProjectCreator}
-            onTaskUpdated={fetchProjectData}
-          />
-        ) : (
-          <ProjectTimeline
-            project={project}
-            tasks={tasks}
-            onAddSubtask={handleCreateSubtask}
-            currentUserId={user?._id}
-            isProjectCreator={isProjectCreator}
-            onTaskUpdated={fetchProjectData}
-          />
-        )}
+        <ProjectNetworkGraph
+          tasks={tasks}
+          projectTitle={project.title}
+          onAddSubtask={handleCreateSubtask}
+          currentUserId={user?._id}
+          isProjectCreator={isProjectCreator}
+          onTaskUpdated={fetchProjectData}
+        />
       </div>
 
       {/* Controlled Create Task Dialog for Subtasks */}
@@ -153,6 +181,16 @@ function ProjectDetailComponent() {
         defaultProjectId={project._id}
         defaultParentId={subtaskParentId}
         parentTaskId={subtaskParentId}
+      />
+
+      <SimulationModal 
+        open={simulationOpen}
+        onOpenChange={setSimulationOpen}
+        projectMembers={projectMembers as any}
+        projectTasks={tasks}
+        onSimulate={handleSimulate}
+        onReset={handleResetSimulation}
+        isSimulating={isSimulating}
       />
     </div>
   )

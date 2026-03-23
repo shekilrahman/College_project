@@ -63,7 +63,12 @@ export function TaskDetailDialog({ task, parentTaskTitle, open, onOpenChange, on
     };
 
     // Check if task is locked by dependencies
-    const incompleteDependencies = (task.dependencies as Task[])?.filter?.(dep => typeof dep === 'object' && dep.status !== 'Completed') || [];
+    const incompleteDependencies = (task.dependencies as Task[])?.filter?.(dep => {
+        if (typeof dep !== 'object') return false;
+        // Task is considered complete if status is 'Completed' OR progress is 100%
+        const isFinished = dep.status === 'Completed' || (dep.progress && dep.progress >= 100);
+        return !isFinished;
+    }) || [];
     const isLocked = incompleteDependencies.length > 0;
 
     return (
@@ -282,7 +287,12 @@ export function TaskDetailDialog({ task, parentTaskTitle, open, onOpenChange, on
                                         // Handle both populated objects and unpopulated string arrays gracefully
                                         const isPopulated = typeof dep === 'object' && dep !== null;
                                         const title = isPopulated ? dep.title : `Task ID: ${dep}`;
-                                        const status = isPopulated ? dep.status : 'Unknown';
+                                        
+                                        // Robust status check: if progress is 100, it's Completed regardless of status string
+                                        let status = isPopulated ? dep.status : 'Unknown';
+                                        if (isPopulated && (dep.progress >= 100)) {
+                                            status = 'Completed';
+                                        }
 
                                         const depStatusColors = {
                                             'Pending': 'text-slate-600 bg-slate-100 border-slate-200',

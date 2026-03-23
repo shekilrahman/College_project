@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
@@ -7,7 +8,7 @@ import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig(async () => ({
+export default defineConfig({
   plugins: [TanStackRouterVite(), react()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
@@ -36,4 +37,23 @@ export default defineConfig(async () => ({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-}));
+  test: {
+    globals: true,
+    environment: "jsdom",
+    setupFiles: [],
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json", "html"],
+      exclude: [
+        "node_modules/", 
+        "src/api/types.ts", 
+        "src/routeTree.gen.ts", 
+        "dist/**", 
+        "**/out/**",
+        "tailwind.config.js",
+        "postcss.config.js",
+        "vite.config.ts"
+      ],
+    },
+  },
+});

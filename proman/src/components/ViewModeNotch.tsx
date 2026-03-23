@@ -1,13 +1,8 @@
-import { Network, GanttChart, ArrowLeft } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
-export type ViewMode = 'graph' | 'timeline';
-
 interface ViewModeNotchProps {
-    value: ViewMode;
-    onChange: (mode: ViewMode) => void;
     projectTitle?: string;
     projectStatus?: string;
     creatorName?: string;
@@ -16,8 +11,6 @@ interface ViewModeNotchProps {
 }
 
 export function ViewModeNotch({
-    value,
-    onChange,
     projectTitle,
     projectStatus,
     creatorName,
@@ -63,33 +56,6 @@ export function ViewModeNotch({
                 </div>
             )}
 
-            {/* View Mode Toggles */}
-            <div className="flex items-center gap-1">
-                <button
-                    onClick={() => onChange('graph')}
-                    className={cn(
-                        "flex items-center justify-center h-8 w-8 rounded-full transition-all duration-200",
-                        value === 'graph'
-                            ? "bg-slate-900 text-white shadow-md"
-                            : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
-                    )}
-                    title="Network Graph View"
-                >
-                    <Network className="h-4 w-4" />
-                </button>
-                <button
-                    onClick={() => onChange('timeline')}
-                    className={cn(
-                        "flex items-center justify-center h-8 w-8 rounded-full transition-all duration-200",
-                        value === 'timeline'
-                            ? "bg-slate-900 text-white shadow-md"
-                            : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
-                    )}
-                    title="Timeline View"
-                >
-                    <GanttChart className="h-4 w-4" />
-                </button>
-            </div>
         </div>
     );
 }

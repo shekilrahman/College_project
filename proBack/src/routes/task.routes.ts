@@ -1,5 +1,5 @@
 import express from 'express';
-import { createTask, createBulkTasks, getTasks, getTaskById, updateTask, deleteTask, startTask, updateProgress, completeTask } from '../controllers/task.controller';
+import { createTask, createBulkTasks, getTasks, getTaskById, updateTask, deleteTask, startTask, updateProgress, completeTask, simulateProjectTasks } from '../controllers/task.controller';
 import { protect } from '../middlewares/auth.middleware';
 
 const router = express.Router();
@@ -9,6 +9,7 @@ router.route('/')
     .get(protect, getTasks);
 
 router.post('/bulk', protect, createBulkTasks);
+router.post('/simulate/:projectId', protect, simulateProjectTasks);
 
 router.route('/:id')
     .get(protect, getTaskById)

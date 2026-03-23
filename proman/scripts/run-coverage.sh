@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# Simple script to run frontend coverage and notify the user
+echo "🚀 Running Frontend Code Coverage Suite..."
+
+# Ensure we are in the correct directory
+cd "$(dirname "$0")/.."
+
+# Run the coverage command
+npm run test:coverage
+
+if [ $? -eq 0 ]; then
+  echo "✅ Frontend coverage report generated successfully!"
+  echo "📊 Local report available at: proman/coverage/index.html"
+else
+  echo "❌ Frontend coverage run failed. Please check the logs above."
+  exit 1
+fi

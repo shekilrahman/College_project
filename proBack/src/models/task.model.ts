@@ -27,6 +27,8 @@ export interface ITask extends Document {
         timestamp: Date;
         note?: string;
     }>;
+    createdAt: Date;
+    updatedAt: Date;
 }
 
 const taskSchema = new Schema({
@@ -103,6 +105,33 @@ const taskSchema = new Schema({
     }],
 }, {
     timestamps: true,
+});
+
+// Helper to sync status with progress
+const syncStatusWithProgress = (task: any) => {
+    if (task.progress >= 100) {
+        task.status = 'Completed';
+        if (!task.dates?.completedDate) {
+            if (!task.dates) task.dates = {};
+            task.dates.completedDate = new Date();
+        }
+    } else if (task.progress > 0 && task.status === 'Pending') {
+        task.status = 'In Progress';
+        if (!task.dates?.startedDate) {
+            if (!task.dates) task.dates = {};
+            task.dates.startedDate = new Date();
+        }
+    }
+};
+
+taskSchema.pre('validate', function(this: any, next: any) {
+    syncStatusWithProgress(this);
+    next();
+});
+
+taskSchema.pre('save', function(this: any, next: any) {
+    syncStatusWithProgress(this);
+    next();
 });
 
 const Task = mongoose.model<ITask>('Task', taskSchema);
