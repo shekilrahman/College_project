@@ -6,6 +6,8 @@ export interface ITaskDates {
     toCompleteDate?: Date;  // Planned due/completion date
     startedDate?: Date;     // Actual start date
     completedDate?: Date;   // Actual completion date
+    predictedStartDate?: Date; // Cached predictive start
+    predictedEndDate?: Date;   // Cached predictive end
 }
 
 export interface ITask extends Document {
@@ -27,6 +29,8 @@ export interface ITask extends Document {
         timestamp: Date;
         note?: string;
     }>;
+    predictedStartDate?: Date;
+    predictedEndDate?: Date;
     createdAt: Date;
     updatedAt: Date;
 }
@@ -60,6 +64,8 @@ const taskSchema = new Schema({
         toCompleteDate: { type: Date },
         startedDate: { type: Date },
         completedDate: { type: Date },
+        predictedStartDate: { type: Date },
+        predictedEndDate: { type: Date },
     },
     createdBy: {
         type: mongoose.Schema.Types.ObjectId,
@@ -109,13 +115,10 @@ const taskSchema = new Schema({
 
 // Helper to sync status with progress
 const syncStatusWithProgress = (task: any) => {
-    if (task.progress >= 100) {
-        task.status = 'Completed';
-        if (!task.dates?.completedDate) {
-            if (!task.dates) task.dates = {};
-            task.dates.completedDate = new Date();
-        }
-    } else if (task.progress > 0 && task.status === 'Pending') {
+    // Note: We do NOT auto-complete here when progress >= 100. 
+    // Leaf nodes must be manually completed via the 'completeTask' endpoint.
+    // Parent nodes will be automatically completed by 'updateParentProgress'.
+    if (task.progress > 0 && task.status === 'Pending') {
         task.status = 'In Progress';
         if (!task.dates?.startedDate) {
             if (!task.dates) task.dates = {};
@@ -124,14 +127,12 @@ const syncStatusWithProgress = (task: any) => {
     }
 };
 
-taskSchema.pre('validate', function(this: any, next: any) {
+taskSchema.pre('validate', function(this: any) {
     syncStatusWithProgress(this);
-    next();
 });
 
-taskSchema.pre('save', function(this: any, next: any) {
+taskSchema.pre('save', function(this: any) {
     syncStatusWithProgress(this);
-    next();
 });
 
 const Task = mongoose.model<ITask>('Task', taskSchema);

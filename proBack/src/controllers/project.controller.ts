@@ -10,7 +10,12 @@ interface AuthRequest extends Request {
 // @access  Private (Admin/PM)
 const createProject = async (req: AuthRequest, res: Response) => {
     try {
-        const { title, description, startDate, endDate, status } = req.body;
+        const { title, description, startDate, endDate, status, members } = req.body;
+
+        const finalMembers = members || [];
+        if (!finalMembers.includes(req.user._id.toString())) {
+            finalMembers.push(req.user._id);
+        }
 
         const project = await Project.create({
             title,
@@ -18,6 +23,7 @@ const createProject = async (req: AuthRequest, res: Response) => {
             startDate,
             endDate,
             status,
+            members: finalMembers,
             createdBy: req.user._id,
         });
 
@@ -32,32 +38,9 @@ const createProject = async (req: AuthRequest, res: Response) => {
 // @access  Private
 const getProjects = async (req: AuthRequest, res: Response) => {
     try {
-        // Import Task model to check for user involvement
-        const Task = (await import('../models/task.model')).default;
-
-        // Find all projects where user is creator
-        const createdProjects = await Project.find({ createdBy: req.user._id }).populate('createdBy', 'name email');
-
-        // Find all tasks where user is involved (assignedTo OR createdBy)
-        const userTasks = await Task.find({
-            $or: [
-                { assignedTo: req.user._id },
-                { createdBy: req.user._id }
-            ]
-        }).distinct('project');
-
-        // Find projects where user has tasks
-        const taskProjects = await Project.find({
-            _id: { $in: userTasks }
-        }).populate('createdBy', 'name email');
-
-        // Combine and deduplicate projects
-        const projectMap = new Map();
-        [...createdProjects, ...taskProjects].forEach(p => {
-            projectMap.set(p._id.toString(), p);
-        });
-
-        const projects = Array.from(projectMap.values());
+        const projects = await Project.find()
+            .populate('createdBy', 'name email')
+            .populate('members', 'name email profilePhoto');
         res.json(projects);
     } catch (error) {
         console.error('Error fetching projects:', error);
@@ -70,7 +53,9 @@ const getProjects = async (req: AuthRequest, res: Response) => {
 // @access  Private
 const getProjectById = async (req: AuthRequest, res: Response): Promise<void> => {
     try {
-        const project = await Project.findById(req.params.id).populate('createdBy', 'name email');
+        const project = await Project.findById(req.params.id)
+            .populate('createdBy', 'name email')
+            .populate('members', 'name email profilePhoto');
         if (project) {
             res.json(project);
         } else {
@@ -104,6 +89,7 @@ const updateProject = async (req: AuthRequest, res: Response): Promise<void> => 
         project.startDate = req.body.startDate || project.startDate;
         project.endDate = req.body.endDate || project.endDate;
         project.status = req.body.status || project.status;
+        project.members = req.body.members || project.members;
 
         const updatedProject = await project.save();
         res.json(updatedProject);
@@ -131,10 +117,14 @@ const deleteProject = async (req: AuthRequest, res: Response): Promise<void> => 
             return;
         }
 
+        // Cascade delete: Remove all tasks related to this project
+        const Task = (await import('../models/task.model')).default;
+        await Task.deleteMany({ project: project._id });
+
         await project.deleteOne();
-        res.json({ message: 'Project removed' });
+        res.json({ message: 'Project and associated tasks removed' });
     } catch (error) {
-        res.status(500).json({ message: 'Server Error' });
+        res.status(500).json({ message: 'Server Error', error });
     }
 };
 

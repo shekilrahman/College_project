@@ -58,3 +58,39 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Sidebar custom scrollbar (light theme) */
+.sidebar-scrollbar-light::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-scrollbar-light::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scrollbar-light::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 9999px;
+}
+
+.sidebar-scrollbar-light::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* Main content scrollbar */
+main::-webkit-scrollbar {
+  width: 6px;
+}
+
+main::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+main::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 9999px;
+}
+
+main::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.3);
+}

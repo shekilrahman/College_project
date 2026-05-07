@@ -138,7 +138,9 @@ const RECENCY_HALF_LIFE_DAYS = 7; // Older than 7 days has half the weight
 
 const computeDynamicFactor = (
     progressHistory: Array<{ progress: number; timestamp: Date | string }>,
-    today: Date
+    today: Date,
+    plannedDays: number,
+    userPerformanceFactor: number = 1.0
 ): number => {
     if (!progressHistory || progressHistory.length < 2) {
         // Not enough data → use a neutral factor; means prediction = planned
@@ -150,43 +152,69 @@ const computeDynamicFactor = (
         (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
     );
 
-    let weightedVelocitySum = 0;
-    let totalWeight = 0;
-
+    // 1. Calculate the velocity segments
+    const segments: Array<{ velocity: number, weight: number }> = [];
+    
     for (let i = 1; i < sorted.length; i++) {
         const prev = sorted[i - 1];
         const curr = sorted[i];
 
-        if (!prev || !curr) continue; // Guard against strict undefined checks
+        if (!prev || !curr) continue;
 
         const prevDate = new Date(prev.timestamp);
         const currDate = new Date(curr.timestamp);
         const periodDays = diffDays(currDate, prevDate);
 
-        if (periodDays <= 0) continue; // Skip duplicate timestamps
+        if (periodDays <= 0) continue; 
 
         const progressDelta = curr.progress - prev.progress;
-        if (progressDelta <= 0) continue; // Skip stalls and regressions
+        // Even if progress stalled (delta 0), we record it to capture the "slowdown"
+        const velocity = Math.max(0, progressDelta / periodDays); // % per day
 
-        const velocity = progressDelta / periodDays; // % per day
-
-        // More recent segments get exponentially higher weight
         const ageInDays = diffDays(today, currDate);
         const weight = Math.pow(2, -ageInDays / RECENCY_HALF_LIFE_DAYS);
 
-        weightedVelocitySum += velocity * weight;
-        totalWeight += weight;
+        segments.push({ velocity, weight });
     }
 
-    if (totalWeight === 0 || weightedVelocitySum === 0) return 1.0;
+    // 2. STALL DETECTION: If the last log was long ago, add a virtual "0 velocity" segment
+    if (sorted.length > 0) {
+        const lastLogDate = new Date(sorted[sorted.length - 1].timestamp);
+        const daysSinceLastLog = diffDays(today, lastLogDate);
+        
+        if (daysSinceLastLog > 2) { // More than 2 days of silence
+            // Weight this silence as a fresh segment
+            const weight = 1.0; 
+            segments.push({ velocity: 0, weight });
+        }
+    }
+
+    if (segments.length === 0) return userPerformanceFactor;
+
+    let weightedVelocitySum = 0;
+    let totalWeight = 0;
+
+    segments.forEach(seg => {
+        weightedVelocitySum += seg.velocity * seg.weight;
+        totalWeight += seg.weight;
+    });
+
+    if (totalWeight === 0 || weightedVelocitySum === 0) return Math.max(1.0, userPerformanceFactor);
 
     const weightedAvgVelocity = weightedVelocitySum / totalWeight;
 
-    // Factor = how much slower than ideal  (e.g. 2.5 pct/day vs 5 ideal = factor 2.0)
-    const rawFactor = IDEAL_VELOCITY_PERCENT_PER_DAY / weightedAvgVelocity;
+    // 3. DYNAMIC BASELINE: Instead of 5%, we use the velocity needed to finish on time
+    // If planned for 10 days, baseline is 10%/day.
+    const baselineVelocity = 100 / Math.max(1, plannedDays);
+    
+    // Factor = baseline / actual
+    const historyFactor = baselineVelocity / weightedAvgVelocity;
 
-    // Clamp to [0.5, 4.0] to avoid absurd edge cases
-    return Math.min(4.0, Math.max(0.5, rawFactor));
+    // Combine history with the user's overall record (weighted 70/30)
+    const combinedFactor = (historyFactor * 0.7) + (userPerformanceFactor * 0.3);
+
+    // Clamp to [0.5, 4.0]
+    return Math.min(4.0, Math.max(0.5, combinedFactor));
 };
 
 /** 
@@ -210,7 +238,7 @@ export const getProjectPredictions = (allTasks: any[], conditions?: SimulationCo
     const visited = new Set<string>();
     const userCalendars = new Map<string, Map<string, number>>();
 
-    // 1. Performance Lookups
+    // 1. Build initial maps
     const taskMap = new Map<string, any>();
     const parentToChildren = new Map<string, string[]>();
 
@@ -227,6 +255,39 @@ export const getProjectPredictions = (allTasks: any[], conditions?: SimulationCo
         }
     });
 
+    // 2. Resource Contention Optimization:
+    // For each team member, their tasks are essentially a sequence.
+    // We add "virtual dependencies" between sequential tasks for the same person
+    // to ensure that a delay in one ripples through their entire workload.
+    const memberTasks = new Map<string, any[]>();
+    allTasks.forEach(t => {
+        const uid = getIdString(t.assignedTo);
+        if (uid) {
+            const tasks = memberTasks.get(uid) || [];
+            tasks.push(t);
+            memberTasks.set(uid, tasks);
+        }
+    });
+
+    const resourceDeps = new Map<string, string[]>();
+    memberTasks.forEach((tasks, uid) => {
+        // Sort by planned start date to establish a "Natural Work Order"
+        tasks.sort((a, b) => {
+            const startA = a.dates?.toStartDate ? new Date(a.dates.toStartDate).getTime() : 0;
+            const startB = b.dates?.toStartDate ? new Date(b.dates.toStartDate).getTime() : 0;
+            return startA - startB;
+        });
+
+        // Each task "depends" on the availability released by the previous one
+        for (let i = 1; i < tasks.length; i++) {
+            const currentId = getIdString(tasks[i]._id)!;
+            const previousId = getIdString(tasks[i-1]._id)!;
+            const deps = resourceDeps.get(currentId) || [];
+            deps.push(previousId);
+            resourceDeps.set(currentId, deps);
+        }
+    });
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -239,6 +300,33 @@ export const getProjectPredictions = (allTasks: any[], conditions?: SimulationCo
         const task = taskMap.get(taskId);
         if (!task) return { predictedStartDate: today, predictedEndDate: today };
 
+        // Inherit dependencies recursively from parents
+        const getAllInheritedDeps = (currId: string): string[] => {
+            const t = taskMap.get(currId);
+            if (!t) return [];
+            
+            const localDeps = (t.dependencies || []).map((d: any) => getIdString(d)).filter(Boolean) as string[];
+            const rDeps = resourceDeps.get(currId) || [];
+            
+            const parentId = getIdString(t.parentTask);
+            const combined = [...localDeps, ...rDeps];
+            
+            if (parentId) {
+                return [...combined, ...getAllInheritedDeps(parentId)];
+            }
+            return combined;
+        };
+
+        const allDepIds = getAllInheritedDeps(taskId);
+        let latestDepEnd = new Date(0);
+
+        allDepIds.forEach(depId => {
+            const depRes = getPredictedDates(depId);
+            if (depRes.predictedEndDate > latestDepEnd) {
+                latestDepEnd = depRes.predictedEndDate;
+            }
+        });
+
         visited.add(taskId);
 
         // Check if this is a Container task (has subtasks)
@@ -249,50 +337,33 @@ export const getProjectPredictions = (allTasks: any[], conditions?: SimulationCo
         let predictedEnd: Date;
 
         if (isContainer) {
-            // CONTAINER LOGIC: Dates are derived purely from children
-            let earliestStart = new Date(8640000000000000);
-            let latestEnd = new Date(0);
+            // CONTAINER LOGIC:
+            // 1. Start is at least the latest dependency end or today
+            let earliestStart = latestDepEnd > today ? new Date(latestDepEnd) : new Date(today);
+            
+            // 2. But it's also constrained by the earliest child start
+            let actualEarliestChildStart = new Date(8640000000000000);
+            let latestChildEnd = new Date(0);
 
             subtaskIds.forEach(sid => {
                 const childRes = getPredictedDates(sid);
-                if (childRes.predictedStartDate < earliestStart) earliestStart = childRes.predictedStartDate;
-                if (childRes.predictedEndDate > latestEnd) latestEnd = childRes.predictedEndDate;
+                if (childRes.predictedStartDate < actualEarliestChildStart) actualEarliestChildStart = childRes.predictedStartDate;
+                if (childRes.predictedEndDate > latestChildEnd) latestChildEnd = childRes.predictedEndDate;
             });
 
-            if (latestEnd.getTime() > 0 && earliestStart.getTime() !== 8640000000000000) {
-                predictedStart = earliestStart;
-                predictedEnd = latestEnd;
+            if (latestChildEnd.getTime() > 0) {
+                // The container starts when its first child starts (or its own deps allow)
+                predictedStart = actualEarliestChildStart < earliestStart ? actualEarliestChildStart : earliestStart;
+                predictedEnd = latestChildEnd;
             } else {
-                predictedStart = today;
-                predictedEnd = today;
+                predictedStart = earliestStart;
+                predictedEnd = earliestStart;
             }
         } else {
             // WORKER LOGIC: Calculate based on dependencies, duration, history, and capacity
             const dates = task.dates || {};
             let baseStart = dates.toStartDate ? new Date(dates.toStartDate) : new Date(today);
             baseStart.setHours(0, 0, 0, 0);
-
-            // Inherit dependencies recursively from parents
-            const getAllInheritedDeps = (currId: string): string[] => {
-                const t = taskMap.get(currId);
-                if (!t) return [];
-                const localDeps = (t.dependencies || []).map((d: any) => getIdString(d)).filter(Boolean) as string[];
-                const parentId = getIdString(t.parentTask);
-                if (parentId) {
-                    return [...localDeps, ...getAllInheritedDeps(parentId)];
-                }
-                return localDeps;
-            };
-
-            const allDepIds = getAllInheritedDeps(taskId);
-            let latestDepEnd = new Date(0);
-
-            allDepIds.forEach(depId => {
-                const depRes = getPredictedDates(depId);
-                if (depRes.predictedEndDate > latestDepEnd) {
-                    latestDepEnd = depRes.predictedEndDate;
-                }
-            });
 
             predictedStart = latestDepEnd > baseStart ? new Date(latestDepEnd) : new Date(baseStart);
 
@@ -316,10 +387,12 @@ export const getProjectPredictions = (allTasks: any[], conditions?: SimulationCo
 
             const progressHistory = task.progressHistory || [];
             let effectiveFactor = 1.0;
+            const userFactor = task.assignedTo?.performanceFactor || getRoleFactor(task.assignedTo?.type);
+
             if (progressHistory.length >= 2) {
-                effectiveFactor = computeDynamicFactor(progressHistory, today);
+                effectiveFactor = computeDynamicFactor(progressHistory, today, plannedDays, userFactor);
             } else {
-                effectiveFactor = getRoleFactor(task.assignedTo?.type);
+                effectiveFactor = userFactor;
             }
 
             const adjustedTotalDays = Math.ceil(plannedDays * effectiveFactor);
@@ -347,9 +420,11 @@ export const getProjectPredictions = (allTasks: any[], conditions?: SimulationCo
                 } else {
                     const workBase = new Date(Math.max(predictedStart.getTime(), today.getTime()));
                     const assigneeId = getIdString(task.assignedTo);
-                    const userLeaves = assigneeId ? (conditions?.memberLeaves || []).filter(l => l.userId === assigneeId) : [];
+                    const userLeaves = assigneeId ? (conditions?.memberLeaves || []).filter(l => getIdString(l.userId) === assigneeId) : [];
                     const globalHolidays = conditions?.globalHolidays || [];
                     const combinedExcluded = [...userLeaves, ...globalHolidays];
+                    
+                    // DEBUG: console.log(`Task ${task.title}: Assigned to ${assigneeId}, Leaves found: ${userLeaves.length}`);
                     
                     const res = addWorkingDaysWithLeaveAndCapacity(assigneeId, workBase, daysRemaining, combinedExcluded, userCalendars);
                     predictedStart = res.actualStart;
@@ -357,7 +432,7 @@ export const getProjectPredictions = (allTasks: any[], conditions?: SimulationCo
                 }
             } else {
                 const assigneeId = getIdString(task.assignedTo);
-                const userLeaves = assigneeId ? (conditions?.memberLeaves || []).filter(l => l.userId === assigneeId) : [];
+                const userLeaves = assigneeId ? (conditions?.memberLeaves || []).filter(l => getIdString(l.userId) === assigneeId) : [];
                 const globalHolidays = conditions?.globalHolidays || [];
                 const combinedExcluded = [...userLeaves, ...globalHolidays];
                 
@@ -366,6 +441,9 @@ export const getProjectPredictions = (allTasks: any[], conditions?: SimulationCo
                 predictedEnd = res.endDate;
             }
         }
+
+        // Safety clamp: predicted end cannot be before start
+        if (predictedEnd < predictedStart) predictedEnd = new Date(predictedStart);
 
         const result: PredictedDates = { predictedStartDate: predictedStart, predictedEndDate: predictedEnd };
         predictions.set(taskId, result);

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import Task from '../models/task.model';
 import Project from '../models/project.model';
+import User from '../models/user.model';
 import { getProjectPredictions } from '../utils/predictiveEngine';
 
 interface AuthRequest extends Request {
@@ -49,11 +50,11 @@ const createTask = async (req: AuthRequest, res: Response) => {
         const task = await Task.create({
             title,
             description,
-            status,
-            priority,
+            status: status || 'Pending',
+            priority: priority || 'Medium',
             dates: dates || {},
             createdBy: req.user._id,
-            assignedTo,
+            assignedTo: assignedTo || undefined,
             parentTask: parentTask || null,
             project,
             level,
@@ -63,7 +64,8 @@ const createTask = async (req: AuthRequest, res: Response) => {
 
         res.status(201).json(task);
     } catch (error: any) {
-        res.status(400).json({ message: error.message || 'Invalid task data', error });
+        console.error('Create Task Error:', error);
+        res.status(400).json({ message: error.message || 'Invalid task data' });
     }
 };
 
@@ -270,11 +272,19 @@ const updateTask = async (req: AuthRequest, res: Response): Promise<void> => {
         const task = await Task.findById(req.params.id);
 
         if (task) {
-            task.title = title || task.title;
-            task.description = description || task.description;
-            task.status = status || task.status;
-            task.priority = priority || task.priority;
-            task.assignedTo = assignedTo || task.assignedTo;
+            task.title = title !== undefined ? title : task.title;
+            task.description = description !== undefined ? description : task.description;
+            task.status = status !== undefined ? status : task.status;
+            task.priority = priority !== undefined ? priority : task.priority;
+            task.assignedTo = assignedTo !== undefined ? (assignedTo === 'unassigned' ? undefined : assignedTo) : task.assignedTo;
+            
+            if (req.body.weight !== undefined) {
+                task.weight = Number(req.body.weight);
+            }
+            
+            if (req.body.dependencies !== undefined) {
+                task.dependencies = req.body.dependencies;
+            }
 
             // Update dates sub-schema
             if (dates) {
@@ -289,8 +299,9 @@ const updateTask = async (req: AuthRequest, res: Response): Promise<void> => {
         } else {
             res.status(404).json({ message: 'Task not found' });
         }
-    } catch (error) {
-        res.status(400).json({ message: 'Invalid task data', error });
+    } catch (error: any) {
+        console.error('Update Task Error:', error);
+        res.status(400).json({ message: error.message || 'Invalid task data' });
     }
 };
 
@@ -410,37 +421,41 @@ const updateProgress = async (req: AuthRequest, res: Response): Promise<void> =>
             return;
         }
 
-        // Update progress
-        let newProgress = task.progress + numAmount;
-        newProgress = Math.max(0, Math.min(100, newProgress)); // Clamp between 0-100
+        // Push the net increment to history
+        task.progressHistory.push({
+            progress: numAmount,
+            timestamp: new Date(),
+            note: note || `${numAmount > 0 ? '+' : ''}${numAmount}%`,
+        });
 
-        task.progress = newProgress;
+        // Calculate the total progress dynamically by summing all history increments
+        let calculatedProgress = task.progressHistory.reduce((sum, entry) => sum + (entry.progress || 0), 0);
+        
+        // Clamp it safely between 0 and 100
+        calculatedProgress = Math.max(0, Math.min(100, calculatedProgress));
 
-        if (newProgress === 100) {
-            task.status = 'Completed';
-            task.dates = {
-                ...task.dates,
-                completedDate: new Date()
-            };
-        } else if (newProgress > 0 && task.status === 'Pending') {
+        task.progress = calculatedProgress;
+
+        if (calculatedProgress > 0 && task.status === 'Pending') {
             task.status = 'In Progress';
             if (!task.dates.startedDate) {
                 task.dates.startedDate = new Date();
             }
         }
 
-        task.progressHistory.push({
-            progress: newProgress,
-            timestamp: new Date(),
-            note: note || `${numAmount > 0 ? '+' : ''}${numAmount}%`,
-        });
-
         await task.save();
+
+        if (task.status === 'Completed' && task.assignedTo) {
+            await updateUserPerformance(task.assignedTo.toString());
+        }
 
         // Update parent progress if exists
         if (task.parentTask) {
             await updateParentProgress(task.parentTask.toString());
         }
+
+        // Trigger project-wide recalculation
+        await triggerProjectRecalculation(task.project.toString());
 
         res.json(task);
     } catch (error) {
@@ -483,20 +498,33 @@ const completeTask = async (req: AuthRequest, res: Response): Promise<void> => {
             completedDate: new Date()
         };
         task.status = 'Completed';
+        // Calculate diff needed to reach 100
+        const currentProgress = task.progressHistory.reduce((sum, entry) => sum + (entry.progress || 0), 0);
+        const diff = 100 - currentProgress;
+
+        if (diff > 0) {
+            task.progressHistory.push({
+                progress: diff,
+                timestamp: new Date(),
+                note: 'Task manually completed',
+            });
+        }
+        
         task.progress = 100;
 
-        task.progressHistory.push({
-            progress: 100,
-            timestamp: new Date(),
-            note: 'Task completed',
-        });
-
         await task.save();
+
+        if (task.assignedTo) {
+            await updateUserPerformance(task.assignedTo.toString());
+        }
 
         // Update parent progress if exists
         if (task.parentTask) {
             await updateParentProgress(task.parentTask.toString());
         }
+
+        // Trigger project-wide recalculation
+        await triggerProjectRecalculation(task.project.toString());
 
         res.json(task);
     } catch (error) {
@@ -562,7 +590,7 @@ async function updateParentProgress(parentId: string) {
         // 3. Record history if something changed
         if (oldProgress !== roundedProgress || oldStatus !== parent.status) {
             parent.progressHistory.push({
-                progress: roundedProgress,
+                progress: roundedProgress - oldProgress,
                 timestamp: new Date(),
                 note: `Auto-updated from subtasks: ${parent.status} (${roundedProgress}%)`
             });
@@ -576,6 +604,103 @@ async function updateParentProgress(parentId: string) {
         }
     } catch (error) {
         console.error('Error updating parent progress:', error);
+    }
+}
+
+/**
+ * Recalculates all task predictions for a project and saves them to the DB.
+ */
+async function triggerProjectRecalculation(projectId: string) {
+    try {
+        const { getProjectPredictions } = await import('../utils/predictiveEngine');
+        const tasks = await Task.find({ project: projectId }).populate('assignedTo');
+        
+        const predictions = getProjectPredictions(tasks);
+        
+        // Batch update predictions
+        for (const task of tasks) {
+            const pred = predictions.get(task._id.toString());
+            if (pred) {
+                task.dates.predictedStartDate = pred.predictedStartDate;
+                task.dates.predictedEndDate = pred.predictedEndDate;
+                // Avoid recursive save hooks if possible, but here we need to save the dates
+                await Task.updateOne(
+                    { _id: task._id },
+                    { 
+                        'dates.predictedStartDate': pred.predictedStartDate,
+                        'dates.predictedEndDate': pred.predictedEndDate
+                    }
+                );
+            }
+        }
+        console.log(`Successfully recalculated predictions for project: ${projectId}`);
+    } catch (error) {
+        console.error('Error triggering project recalculation:', error);
+    }
+}
+
+async function updateUserPerformance(userId: string) {
+    try {
+        const user = await User.findById(userId);
+        if (!user) return;
+
+        const tasks = await Task.find({ assignedTo: userId, status: 'Completed' });
+        if (tasks.length === 0) {
+            user.performanceFactor = 1.0; // Reset to baseline if no tasks
+            await user.save();
+            return;
+        }
+
+        let totalEfficiency = 0;
+        let totalOnTime = 0;
+        let totalHours = 0;
+        let validTasksCount = 0;
+
+        for (const task of tasks) {
+            const { toStartDate, toCompleteDate, startedDate, completedDate } = task.dates;
+            
+            if (toStartDate && toCompleteDate && startedDate && completedDate) {
+                const plannedDuration = new Date(toCompleteDate).getTime() - new Date(toStartDate).getTime();
+                const actualDuration = new Date(completedDate).getTime() - new Date(startedDate).getTime();
+                
+                if (actualDuration > 0) {
+                    // Efficiency = Planned / Actual (higher is better)
+                    // Cap it to reasonable limits (0.5 to 3.0)
+                    const efficiency = Math.max(0.5, Math.min(3.0, plannedDuration / actualDuration));
+                    totalEfficiency += efficiency;
+                    
+                    const hours = actualDuration / (1000 * 60 * 60);
+                    totalHours += hours;
+                    
+                    if (new Date(completedDate) <= new Date(toCompleteDate)) {
+                        totalOnTime++;
+                    }
+                    
+                    validTasksCount++;
+                }
+            }
+        }
+
+        if (validTasksCount > 0) {
+            const avgEfficiency = totalEfficiency / validTasksCount;
+            const onTimeRate = (totalOnTime / validTasksCount) * 100;
+            const avgTime = totalHours / validTasksCount;
+            const projectsCount = await Task.distinct('project', { assignedTo: userId });
+
+            user.performanceFactor = Number(avgEfficiency.toFixed(2));
+            user.metrics = {
+                totalTasksCompleted: tasks.length,
+                averageCompletionTime: Number(avgTime.toFixed(1)),
+                onTimeCompletionRate: Math.round(onTimeRate),
+                totalProjectsInvolved: projectsCount.length,
+                efficiencyScore: Math.round(avgEfficiency * 50 + (onTimeRate / 2)),
+                lastCalculationDate: new Date()
+            };
+
+            await user.save();
+        }
+    } catch (error) {
+        console.error('Error updating user performance:', error);
     }
 }
 
@@ -663,7 +788,7 @@ const createBulkTasks = async (req: AuthRequest, res: Response): Promise<void> =
         res.status(201).json(createdTasks);
     } catch (error: any) {
         console.error('Bulk create error:', error);
-        res.status(400).json({ message: error.message || 'Failed to create tasks', error: error.toString() });
+        res.status(400).json({ message: error.message || 'Failed to create tasks' });
     }
 };
 

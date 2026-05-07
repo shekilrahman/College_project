@@ -15,6 +15,7 @@ import { format } from 'date-fns';
 import { Task } from '@/api/types';
 import { updateTaskProgress } from '@/api/tasks';
 import { Lock } from 'lucide-react';
+import { UpdateTaskSheet } from './UpdateTaskSheet';
 
 
 interface TaskDetailDialogProps {
@@ -103,6 +104,22 @@ export function TaskDetailDialog({ task, parentTaskTitle, open, onOpenChange, on
                                 )}
                             </div>
                         </div>
+                        {canUpdateProgress && (
+                            <div className="flex items-center gap-2">
+                                <UpdateTaskSheet
+                                    task={task}
+                                    project={task.project as any}
+                                    onTaskUpdated={() => {
+                                        if (onTaskUpdated) onTaskUpdated();
+                                    }}
+                                    trigger={
+                                        <Button variant="outline" size="sm" className="gap-2">
+                                            <TrendingUp className="h-4 w-4" /> Edit Task
+                                        </Button>
+                                    }
+                                />
+                            </div>
+                        )}
                     </div>
                 </DialogHeader>
 

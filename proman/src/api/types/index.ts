@@ -3,6 +3,16 @@ export interface User {
     name: string;
     email: string;
     type: 'admin' | 'pm' | 'dev' | 'intern' | 'user';
+    profilePhoto?: string;
+    performanceFactor: number;
+    metrics: {
+        totalTasksCompleted: number;
+        averageCompletionTime: number;
+        onTimeCompletionRate: number;
+        totalProjectsInvolved: number;
+        efficiencyScore: number;
+        lastCalculationDate: string;
+    };
     createdAt: string;
     updatedAt: string;
 }
@@ -15,6 +25,7 @@ export interface Project {
     endDate: string;
     status: 'Planned' | 'Active' | 'Completed' | 'On Hold';
     createdBy: string | User;
+    members: string[] | User[];
     createdAt: string;
     updatedAt: string;
 }
@@ -25,6 +36,8 @@ export interface TaskDates {
     toCompleteDate?: string;
     startedDate?: string;
     completedDate?: string;
+    predictedStartDate?: string;
+    predictedEndDate?: string;
 }
 
 export interface TaskProgressHistory {
@@ -86,7 +99,9 @@ export interface CreateProjectRequest {
     status?: 'Planned' | 'Active' | 'Completed' | 'On Hold';
 }
 
-export interface UpdateProjectRequest extends Partial<CreateProjectRequest> { }
+export interface UpdateProjectRequest extends Partial<CreateProjectRequest> {
+    members?: string[];
+}
 
 // Task DTOs
 export interface CreateTaskRequest {

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Plus, Lock, Link2, AlertCircle, GitGraph } from 'lucide-react';
+import { Plus, Lock, Link2, AlertCircle, Pencil, GitGraph } from 'lucide-react';
 import dagre from 'dagre';
 import ReactFlow, {
     Background,
@@ -11,18 +11,20 @@ import ReactFlow, {
     Handle,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { TaskDetailDialog } from './TaskDetailDialog';
+import { TaskDetailSheet } from './TaskDetailSheet';
+import { UpdateTaskSheet } from './UpdateTaskSheet';
 import { format } from 'date-fns';
 
-import { Task } from '@/api/types';
+import { Task, Project } from '@/api/types';
 
 interface ProjectNetworkGraphProps {
     tasks: Task[];
-    projectTitle: string;
+    project: Project;
     onAddSubtask?: (taskId: string) => void;
     currentUserId?: string;
     isProjectCreator?: boolean;
     onTaskUpdated?: () => void;
+    baselineTasks?: Task[];
 }
 
 const statusColorMap: Record<string, string> = {
@@ -62,9 +64,12 @@ const nodeTypes = {
 };
 
 
-export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, currentUserId, isProjectCreator = false, onTaskUpdated }: ProjectNetworkGraphProps) {
+export function ProjectNetworkGraph({ tasks, project, onAddSubtask, currentUserId, isProjectCreator = false, onTaskUpdated, baselineTasks }: ProjectNetworkGraphProps) {
     const [selectedTask, setSelectedTask] = useState<Task | null>(null);
     const [detailsOpen, setDetailsOpen] = useState(false);
+    const [editOpen, setEditOpen] = useState(false);
+    const [taskToEdit, setTaskToEdit] = useState<Task | null>(null);
+
     // Which node's lock icon was clicked — null means all dep edges are hidden
     const [focusedDepNodeId, setFocusedDepNodeId] = useState<string | null>(null);
     // Which node's ancestry path is shown
@@ -90,12 +95,23 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
             data: {
                 label: (
                     <div className="flex flex-col items-center">
-                        <div className="font-bold text-lg">{projectTitle}</div>
-                        {maxProjectEnd.getTime() > 0 && (
-                            <div className="text-xs text-slate-300 mt-1">
-                                Est. Finish: <span className="text-emerald-400 font-semibold">{format(maxProjectEnd, 'MMM d, yyyy')}</span>
+                        <div className="font-bold text-lg">{project.title}</div>
+                        <div className="flex flex-col gap-0.5 mt-2 text-[10px] text-slate-400 font-bold uppercase tracking-widest w-full">
+                            <div className="flex items-center justify-between gap-4">
+                                <span>Timeline:</span>
+                                <span className="text-white">
+                                    {format(new Date(project.startDate), 'MMM d, yyyy')} - {format(new Date(project.endDate), 'MMM d, yyyy')}
+                                </span>
                             </div>
-                        )}
+                            {maxProjectEnd.getTime() > 0 && (
+                                <div className="flex items-center justify-between gap-4 border-t border-slate-700 pt-1 mt-1">
+                                    <span>Est. Finish:</span>
+                                    <span className="text-emerald-400 font-black">
+                                        {format(maxProjectEnd, 'MMM d, yyyy')}
+                                    </span>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )
             },
@@ -139,7 +155,7 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
             // Check if locked by dependencies
             const incompleteDependencies = (task.dependencies as (Task | string)[])?.filter?.(dep => {
                 let depData: any = typeof dep === 'object' ? dep : null;
-                
+
                 if (!depData || !depData.status) {
                     const depId = (typeof dep === 'string' ? dep : (dep?._id || (dep as any)?.id))?.toString();
                     depData = tasks.find(t => t._id.toString() === depId);
@@ -156,12 +172,33 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                 nodeBackground = '#f8fafc'; // slate-50
             }
 
+            // Calculate drift for highlighting
+            const baseline = baselineTasks?.find(bt => bt._id === task._id);
+            const hasDrift = baseline && task.predictedEndDate && baseline.predictedEndDate && 
+                             new Date(task.predictedEndDate).getTime() !== new Date(baseline.predictedEndDate).getTime();
+            
+            // Check if any child has drift (Internal Impact)
+            const isContainer = tasks.some(t => {
+                const pid = typeof t.parentTask === 'string' ? t.parentTask : (t.parentTask?._id || (t.parentTask as any)?.id);
+                return pid?.toString() === task._id.toString();
+            });
+            const hasInternalDrift = isContainer && tasks.some(t => {
+                const pid = typeof t.parentTask === 'string' ? t.parentTask : (t.parentTask?._id || (t.parentTask as any)?.id);
+                if (pid?.toString() !== task._id.toString()) return false;
+                const b = baselineTasks?.find(bt => bt._id === t._id);
+                return b && t.predictedEndDate && b.predictedEndDate && 
+                       new Date(t.predictedEndDate).getTime() !== new Date(b.predictedEndDate).getTime();
+            });
+
             // 2. Create the node with explicit handle positions for better routing
             initialNodes.push({
                 id: nodeId,
                 data: {
                     label: (
-                        <div className={`min-w-[150px] relative group overflow-hidden ${isLocked ? 'opacity-90 grayscale-[20%]' : ''}`}>
+                        <div className={`min-w-[150px] relative group overflow-hidden transition-all duration-300 ${
+                            hasDrift ? 'ring-2 ring-red-500 shadow-[0_0_15px_rgba(239,68,68,0.3)]' : 
+                            hasInternalDrift ? 'ring-2 ring-orange-400 shadow-[0_0_10px_rgba(251,146,60,0.2)]' : ''
+                        }`}>
                             {/* Content */}
                             <div className="p-2">
                                 <div className="font-bold text-sm truncate pr-4">{task.title}</div>
@@ -171,7 +208,7 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                                         <div className="flex items-center gap-1 relative group/lock">
                                             <span className="text-[9px] text-red-500 font-bold">{incompleteDependencies.length}</span>
                                             <Lock className="h-3.5 w-3.5 text-red-500 cursor-help animate-pulse" />
-                                            
+
                                             {/* Persistent Tooltip on Hover */}
                                             <div className="absolute bottom-full right-0 mb-2 z-[9999] bg-white text-slate-800 p-2 rounded-lg shadow-2xl border border-red-200 hidden group-hover/lock:block min-w-[160px] text-[10px] pointer-events-none">
                                                 <div className="font-bold text-red-600 border-b border-red-100 mb-1 flex items-center gap-1">
@@ -195,35 +232,64 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                                             <span className="text-[8px] opacity-70">({task.assignedTo.type || 'dev'})</span>
                                         </div>
                                     )}
-                                    <div className="flex flex-col gap-1 mt-1 pb-1 pt-1 border-t border-slate-100 dark:border-slate-800">
-                                        <div className="flex items-center justify-between text-[9px]">
-                                            <span className="text-slate-500">Target:</span>
-                                            <span className={task.dates?.toCompleteDate ? 'text-slate-700 font-medium' : 'text-slate-400'}>
-                                                {task.dates?.toCompleteDate ? format(new Date(task.dates.toCompleteDate), 'MMM d') : 'Unset'}
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center justify-between text-[9px]">
-                                            <span className="text-slate-500">Predicted:</span>
-                                            {task.predictedEndDate ? (() => {
-                                                const pred = new Date(task.predictedEndDate);
-                                                const orig = task.dates?.toCompleteDate ? new Date(task.dates.toCompleteDate) : null;
-                                                const isLate = orig && pred.getTime() > orig.getTime();
-                                                return (
-                                                    <span className={`font-bold ${isLate ? 'text-red-500' : 'text-emerald-600'}`}>
-                                                        {format(pred, 'MMM d')}
-                                                    </span>
-                                                );
-                                            })() : (
-                                                <span className="text-slate-400">—</span>
-                                            )}
-                                        </div>
+                                    <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-slate-500">{task.dates?.startedDate ? 'Started:' : 'Start:'}</span>
+                                        <span className={(task.dates?.startedDate || task.dates?.toStartDate) ? 'text-slate-700 font-medium' : 'text-slate-400'}>
+                                            {task.dates?.startedDate 
+                                                ? format(new Date(task.dates.startedDate), 'MMM d') 
+                                                : (task.dates?.toStartDate ? format(new Date(task.dates.toStartDate), 'MMM d') : 'Unset')}
+                                        </span>
                                     </div>
+                                    <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-slate-500">Target:</span>
+                                        <span className={task.dates?.toCompleteDate ? 'text-slate-700 font-medium' : 'text-slate-400'}>
+                                            {task.dates?.toCompleteDate ? format(new Date(task.dates.toCompleteDate), 'MMM d') : 'Unset'}
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center justify-between text-[9px]">
+                                        <span className="text-slate-500">Predicted:</span>
+                                        {task.predictedEndDate ? (() => {
+                                            const pred = new Date(task.predictedEndDate);
+                                            const orig = task.dates?.toCompleteDate ? new Date(task.dates.toCompleteDate) : null;
+                                            const isLate = orig && pred.getTime() > orig.getTime();
+                                            return (
+                                                <span className={`font-bold ${isLate ? 'text-red-500' : 'text-emerald-600'}`}>
+                                                    {format(pred, 'MMM d')}
+                                                </span>
+                                            );
+                                        })() : (
+                                            <span className="text-slate-400">-</span>
+                                        )}
+                                    </div>
+                                    {baselineTasks && (
+                                        <div className="flex items-center justify-between text-[9px] mt-1 pt-1 border-t border-dashed border-slate-200">
+                                            <span className="text-slate-500 font-bold italic">
+                                                {hasDrift ? 'Sim. Drift:' : 'Child Drift:'}
+                                            </span>
+                                            {(() => {
+                                                if (hasDrift) {
+                                                    const oldDate = new Date(baseline!.predictedEndDate!);
+                                                    const newDate = new Date(task.predictedEndDate!);
+                                                    const diffDays = Math.ceil((newDate.getTime() - oldDate.getTime()) / (1000 * 60 * 60 * 24));
+                                                    return (
+                                                        <span className="font-black text-red-500">
+                                                            +{diffDays}d
+                                                        </span>
+                                                    );
+                                                }
+                                                if (hasInternalDrift) {
+                                                    return <span className="font-medium text-orange-500 italic">Affected</span>;
+                                                }
+                                                return <span className="text-slate-400">0d</span>;
+                                            })()}
+                                        </div>
+                                    )}
                                     <div className="flex items-center justify-between text-[10px] text-muted-foreground mt-0.5 border-t pt-1 border-slate-50 dark:border-slate-800">
                                         <span>Level: {task.level}</span>
                                         <span className="font-semibold text-blue-600">{progress}%</span>
                                     </div>
                                 </div>
-                                {/* Coupled View Button - shown on hover when task has dependencies */}
+                                {/* Coupled View Button */}
                                 {task.dependencies && (task.dependencies as any[]).length > 0 && (
                                     <div
                                         className="absolute top-1 right-8 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -281,6 +347,22 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                                         </div>
                                     </div>
                                 )}
+
+                                {/* Edit Task Button */}
+                                {(isAssignedToMe || isProjectCreator) && (
+                                    <div
+                                        className="absolute top-16 right-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setTaskToEdit(task);
+                                            setEditOpen(true);
+                                        }}
+                                    >
+                                        <div className="h-6 w-6 rounded-full bg-slate-900 text-white flex items-center justify-center hover:bg-slate-800 cursor-pointer shadow-sm mt-1" title="Edit Task">
+                                            <Pencil className="h-3 w-3" />
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                             {/* Progress Bar at Bottom */}
                             <div className="absolute bottom-0 left-0 right-0 h-1 bg-slate-200">
@@ -301,7 +383,7 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                     background: nodeBackground,
                     width: 190,
                     cursor: 'pointer',
-                    overflow: 'visible', 
+                    overflow: 'visible',
                     zIndex: 50
                 },
                 type: 'taskNode',
@@ -418,10 +500,10 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                             target: task._id,
                             animated: true,
                             style: { stroke: '#fb923c', strokeDasharray: '6,3', strokeWidth: 2, opacity: 0.9 },
-                            type: 'smoothstep', 
+                            type: 'smoothstep',
                             sourceHandle: 'right',
                             targetHandle: 'left',
-                            zIndex: 1, 
+                            zIndex: 1,
                             label: 'Coupled',
                             labelStyle: { fill: '#f97316', fontWeight: 700, fontSize: '10px' },
                             labelBgStyle: { fill: 'white', fillOpacity: 0.98, rx: 8, ry: 8, stroke: '#fb923c', strokeWidth: 1 },
@@ -437,7 +519,7 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
             // Calculate Level Density for Dynamic Spacing
             const levelDensity: Record<number, number> = {};
             let maxNodesInLevel = 1;
-            
+
             initialNodes.forEach(node => {
                 const lvl = node.id === 'project-root' ? -1 : (node.data.level !== undefined ? node.data.level : 1);
                 levelDensity[lvl] = (levelDensity[lvl] || 0) + 1;
@@ -447,7 +529,7 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
             // Dynamic Spacing Constants
             // Horizontal: More nodes = tighter spacing (min 150, max 400)
             const dynamicNodesep = Math.max(150, Math.min(400, 600 / Math.sqrt(maxNodesInLevel)));
-            
+
             // Vertical: More levels = tighter spacing (min 120, max 300)
             const totalLevels = Object.keys(levelDensity).length;
             const dynamicRanksep = Math.max(120, Math.min(300, 500 / Math.log2(totalLevels + 1)));
@@ -510,10 +592,10 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                     }
 
                     const visualRank = levelToRankMap.get(rawLevel) || 0;
-                    
+
                     // LEVEL_HEIGHT should match dynamicRanksep + card height (approx 80)
-                    const LEVEL_HEIGHT = dynamicRanksep + 80; 
-                    y = (visualRank + 1) * LEVEL_HEIGHT; 
+                    const LEVEL_HEIGHT = dynamicRanksep + 80;
+                    y = (visualRank + 1) * LEVEL_HEIGHT;
                 }
 
                 node.position = {
@@ -524,7 +606,7 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
         }
 
         return { nodes: initialNodes, edges: generatedEdges };
-    }, [tasks, projectTitle, currentUserId, onAddSubtask, isProjectCreator]);
+    }, [tasks, project.title, currentUserId, onAddSubtask, isProjectCreator]);
 
     const onNodeClick = (_: React.MouseEvent, node: Node) => {
         if (node.id === 'project-root') return;
@@ -542,10 +624,10 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                 const isFinished = status === 'completed' || status === 'done' || progress >= 100;
                 return !isFinished;
             }) || [];
-            
+
             const isLocked = incompleteDependencies.length > 0;
-            const assigneeId = (typeof task.assignedTo === 'string' 
-                ? task.assignedTo 
+            const assigneeId = (typeof task.assignedTo === 'string'
+                ? task.assignedTo
                 : (task.assignedTo as any)?._id || (task.assignedTo as any)?.id)?.toString();
             const isAssignedToMe = assigneeId === currentUserId?.toString();
 
@@ -574,7 +656,7 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
             };
             findAncestors(focusedAncestryNodeId);
 
-            const displayedEdges = edges.filter(e => 
+            const displayedEdges = edges.filter(e =>
                 ancestryPathIds.has(e.source) && ancestryPathIds.has(e.target) && !e.id.startsWith('dep-')
             );
 
@@ -644,37 +726,13 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                 <Background gap={12} size={1} />
                 <Controls />
                 <MiniMap zoomable pannable />
-
-                {/* Legend Panel */}
-                <div className="absolute bottom-6 left-6 bg-white/90 backdrop-blur-sm p-4 rounded-lg shadow-lg border border-slate-200 z-10 w-64 pointer-events-none">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Label Guide</h3>
-                    <div className="space-y-3 text-sm">
-                        <div className="flex items-center gap-2">
-                            <div className="w-8 h-0 border-t-2 border-slate-500 border-solid"></div>
-                            <span className="text-slate-700">Parent / Child</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <div className="w-8 h-0 border-t-2 border-orange-400 border-dashed"></div>
-                            <span className="text-slate-700">Coupled</span>
-                        </div>
-                        <div className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-100">
-                            <div className="w-4 h-4 rounded-sm bg-[#dcfce7] border border-green-200"></div>
-                            <span className="text-slate-700 text-xs">Assigned to me</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <div className="w-4 h-4 rounded-sm bg-[#e0f2fe] border border-sky-200"></div>
-                            <span className="text-slate-700 text-xs">Created by me</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <div className="w-4 h-4 rounded-sm bg-[#f8fafc] border border-slate-200 opacity-70"></div>
-                            <span className="text-slate-700 text-xs flex items-center"><Lock className="w-3 h-3 text-red-400 mr-1" />Locked by dep.</span>
-                        </div>
-                    </div>
-                </div>
             </ReactFlow>
 
-            <TaskDetailDialog
+            <TaskDetailSheet
+                key={selectedTask?._id || 'none'}
                 task={selectedTask}
+                project={project}
+                allTasks={tasks}
                 open={detailsOpen}
                 onOpenChange={setDetailsOpen}
                 onAddSubtask={onAddSubtask}
@@ -682,13 +740,23 @@ export function ProjectNetworkGraph({ tasks, projectTitle, onAddSubtask, current
                     const parentId = typeof t.parentTask === 'string' ? t.parentTask : t.parentTask?._id;
                     return parentId === selectedTask._id;
                 }) : false}
-                canUpdateProgress={selectedTask ? (
-                    // User can update progress if they are the assignee OR the creator of the task
-                    (typeof selectedTask.assignedTo !== 'string' && selectedTask.assignedTo?._id === currentUserId) ||
-                    (typeof selectedTask.createdBy !== 'string' && selectedTask.createdBy?._id === currentUserId)
-                ) : false}
+                canUpdateProgress={false}
                 onTaskUpdated={onTaskUpdated}
             />
+
+            {taskToEdit && (
+                <UpdateTaskSheet
+                    key={taskToEdit._id}
+                    task={taskToEdit}
+                    project={project}
+                    open={editOpen}
+                    onOpenChange={setEditOpen}
+                    onTaskUpdated={() => {
+                        if (onTaskUpdated) onTaskUpdated();
+                        setTaskToEdit(null);
+                    }}
+                />
+            )}
         </div>
     );
 }

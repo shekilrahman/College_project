@@ -6,6 +6,16 @@ interface User {
     name: string;
     email: string;
     type: string;
+    profilePhoto?: string;
+    performanceFactor: number;
+    metrics?: {
+        totalTasksCompleted: number;
+        averageCompletionTime: number;
+        onTimeCompletionRate: number;
+        totalProjectsInvolved: number;
+        efficiencyScore: number;
+        lastCalculationDate: string;
+    };
 }
 
 interface AuthContextType {

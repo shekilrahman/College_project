@@ -25,19 +25,25 @@ const protect = async (req: AuthRequest, res: Response, next: NextFunction) => {
                 throw new Error('JWT_SECRET not defined');
             }
 
-            const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as unknown as { id: string };
-
+            const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as any;
             req.user = await User.findById(decoded.id).select('-password');
 
-            next();
+            if (!req.user) {
+                res.status(401).json({ message: 'User not found' });
+                return;
+            }
+
+            return next();
         } catch (error) {
-            console.error(error);
+            console.error('Auth error:', error);
             res.status(401).json({ message: 'Not authorized, token failed' });
+            return;
         }
     }
 
     if (!token) {
         res.status(401).json({ message: 'Not authorized, no token' });
+        return;
     }
 };
 

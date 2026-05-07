@@ -5,6 +5,7 @@ import { QueryProvider } from "@/providers/query-provider";
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { routeTree } from './routeTree.gen'
 import { AuthProvider } from './context/AuthContext'
+import { Toaster } from "@/components/ui/sonner"
 
 // Create a new router instance
 const router = createRouter({ routeTree })
@@ -21,6 +22,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <AuthProvider>
       <QueryProvider>
         <RouterProvider router={router} />
+        <Toaster />
       </QueryProvider>
     </AuthProvider>
   </React.StrictMode>,

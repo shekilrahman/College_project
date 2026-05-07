@@ -7,6 +7,7 @@ export interface IProject extends Document {
     endDate: Date;
     status: 'Planned' | 'Active' | 'Completed' | 'On Hold';
     createdBy: mongoose.Types.ObjectId;
+    members: mongoose.Types.ObjectId[];
 }
 
 const projectSchema = new Schema({
@@ -35,6 +36,10 @@ const projectSchema = new Schema({
         ref: 'User',
         required: true,
     },
+    members: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+    }],
 }, {
     timestamps: true,
 });

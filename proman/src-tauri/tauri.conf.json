@@ -12,9 +12,10 @@
   "app": {
     "windows": [
       {
-        "title": "proman",
+        "title": "ProMan",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "decorations": false
       }
     ],
     "security": {

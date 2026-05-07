@@ -2,6 +2,10 @@ import { Request, Response } from 'express';
 import User from '../models/user.model';
 import generateToken from '../utils/generateToken';
 
+interface AuthRequest extends Request {
+    user?: any;
+}
+
 // @desc    Auth user & get token
 // @route   POST /api/auth/login
 // @access  Public
@@ -16,6 +20,7 @@ const authUser = async (req: Request, res: Response): Promise<void> => {
             name: user.name,
             email: user.email,
             type: user.type,
+            profilePhoto: user.profilePhoto,
             token: generateToken((user._id as unknown) as string),
         });
     } else {
@@ -49,6 +54,7 @@ const registerUser = async (req: Request, res: Response): Promise<void> => {
             name: user.name,
             email: user.email,
             type: user.type,
+            profilePhoto: user.profilePhoto,
             token: generateToken((user._id as unknown) as string),
         });
     } else {
@@ -56,4 +62,64 @@ const registerUser = async (req: Request, res: Response): Promise<void> => {
     }
 };
 
-export { authUser, registerUser };
+// @desc    Update user profile
+// @route   PUT /api/auth/profile
+// @access  Private
+const updateUserProfile = async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const user = await User.findById(req.user._id);
+
+        if (user) {
+            user.name = req.body.name || user.name;
+            user.email = req.body.email || user.email;
+            if (req.body.profilePhoto) {
+                user.profilePhoto = req.body.profilePhoto;
+            }
+
+            const updatedUser = await user.save();
+
+            res.json({
+                _id: updatedUser._id,
+                name: updatedUser.name,
+                email: updatedUser.email,
+                type: updatedUser.type,
+                profilePhoto: updatedUser.profilePhoto,
+            });
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error });
+    }
+};
+
+// @desc    Update user password
+// @route   PUT /api/auth/password
+// @access  Private
+const updateUserPassword = async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+        const user = await User.findById(req.user._id);
+
+        if (user) {
+            const { currentPassword, newPassword } = req.body;
+
+            const isMatch = await user.matchPassword(currentPassword);
+
+            if (!isMatch) {
+                res.status(401).json({ message: 'Current password is incorrect' });
+                return;
+            }
+
+            user.password = newPassword;
+            await user.save();
+
+            res.json({ message: 'Password updated successfully' });
+        } else {
+            res.status(404).json({ message: 'User not found' });
+        }
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error', error });
+    }
+};
+
+export { authUser, registerUser, updateUserProfile, updateUserPassword };
